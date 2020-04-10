@@ -1,0 +1,165 @@
+#!/usr/bin/env python3
+
+
+##  Fitting Theoretical Distributions
+##  CS 115 Final Project
+##
+##  AUTHOR: Jacob VanDrunen [JVANDRUN]
+##    DATE: December 12, 2019
+
+
+import sys
+
+import numpy as np
+import scipy.stats as st
+
+
+SCREED = '''
+ARE P-VALUES BAD FOR YOUR HEALTH?
+
+The ASA has issued the following 6 statements on the intended use of p-values.
+Use the output of this program at your own risk.
+
+ 1. P-values can indicate how incompatible the data are with a specified
+    statistical model.
+ 2. P-values do not measure the probability that the studied hypothesis is
+    true, or the probability that the data were produced by random chance
+    alone.
+ 3. Scientific conclusions and business or policy decisions should not be based
+    only on whether a p-value passes a specific threshold.
+ 4. Proper inference requires full reporting and transparency.
+ 5. A p-value or statistical significance does not measure the size of an
+    effect or the importance of a result.
+ 6. By itself, a p-value does not provide a good measure of evidence regarding
+    a model or hypothesis.
+
+For your Bayesian convenience, we have included the AIC measure for every
+theoretically-fit distribution. As if that should make you more confident of
+your decision.
+'''
+
+
+def mle_normal(values):
+    # The MLE of the mean and variance of a normal distribution is the mean of
+    # the observed distribution and the sample variance (that is, without the
+    # loss of dof) of the observed distribution. scipy returns a "scale"
+    # parameter which is equivalent to the standard deviation.
+    params = st.norm.fit(values)
+    return 'norm', params, 'Normal(mean={:.2f}, std={:.2f})'.format(*params)
+
+
+def mle_exponential(values):
+    # The MLE for the rate of an exponential distribution is the inverse of the
+    # mean of the observed distribution.
+    try:
+        params = st.expon.fit(values, floc=0.)
+        # scipy estimates a "scale" (beta) parameter, which is equal to
+        #   1. / "rate" (lambda)
+        rate = 1. / params[1]
+        return 'expon', params, 'Exponential(rate={:.2f})'.format(rate)
+    except Exception:
+        return None, None, '(Exponential undefined for domain: [{:.2f}, {:.2f}])'.format(np.min(values), np.max(values))
+
+
+def mle_uniform(values):
+    # The MLE for the bounds of a uniform distribution are the max and min of
+    # the observed distribution.
+    params = st.uniform.fit(values)
+    # scipy estimates "location" and "scale" parameters, where the domain is
+    #   [location, location + scale]
+    a = params[0]
+    b = params[0] + params[1]
+    return 'uniform', params, 'Uniform({:.2f}, {:.2f})'.format(a, b)
+
+
+def ks_test(values, dist, params):
+    # D-statistic determined by computing the supremum of the supremums of D+
+    # and D-, the vertical distances (+ and -) between the edf of the sample
+    # and the cdf of the distribution to test across all points
+    D = st.kstest(values, dist, params, alternative='two-sided', mode='asymp').statistic
+    # p-value determined by computing the percentile of the D statistic
+    # multiplied by the ratio given in class (sqrt(n) * D would also work in the
+    # simpler case) on the Kolmogorov distribution
+    p = 1. - st.kstwobign.cdf((np.sqrt(len(values)) + (0.11 / np.sqrt(len(values))) + 0.12) * D)
+    return p
+
+
+def aic_test(values, dist, params):
+    # Uses the modified Akaike information criterion to account for potentially
+    # small sample sizes. The log-likelihood is calculated as the log of the
+    # product of the probability density of every point in the observed data on
+    # the proposed distribution (i.e. the sum of the logs of the same).
+    k = len(params)
+    ll = np.sum(getattr(st, dist).logpdf(values, *params))
+    aic = 2.*k - 2.*ll + (2.*(k**2 + k))/(len(values) - k - 1.)
+    return aic
+
+
+def print_results(fits_ks, fits_aic):
+    print('KOLMOGOROV-SMIRNOV TEST')
+    for p_value, label in fits_ks:
+        print('  p={:.05f}  {}'.format(p_value, label))
+    print()
+    print('AKAIKE INFORMATION CRITERION')
+    for aic, label in fits_aic:
+        print('  {:9d}  {}'.format(int(aic), label))
+
+
+def distfit(values, dists):
+    fits_ks = []
+    fits_ks.append((0.05, '-'*67))
+    fits_aic = []
+    for estimator in dists:
+        dist, params, label = estimator(values)
+        if dist is not None:
+            # NOTE: formally, this is very bad practice. We are performing our
+            # statistical test against a distribution that has already been fit
+            # with parameters derived from the empirical data. However, it seems
+            # to me that we can get away with it here because our goal is to
+            # find an ordinal comparison of distributions, thus the question we
+            # are answering here is: given two potential families of
+            # distributions, which one fits the data better? We are NOT asking:
+            # given a distribution fit to the data, how well does it fit?
+            # However, it means that our p-values should be treated with all the
+            # more caution. Note also that the p-values are the reverse of how
+            # they are typically treated: higher p-value means that there is a
+            # higher chance that the null hypothesis (that the data is
+            # distributed in the way proposed) is true.
+            p_value = ks_test(values, dist, params)
+            fits_ks.append((p_value, label))
+            # AIC makes more sense, assuming that my comment above is correct.
+            # AIC is a generic metric intended solely for model comparison (that
+            # is, it does not have a simple interpretation outside of "this
+            # model carries less risk than that one by some quantity." Lower is
+            # better :)
+            aic = aic_test(values, dist, params)
+            fits_aic.append((aic, label))
+        else:
+            fits_ks.append((0., label))
+    print_results(sorted(fits_ks, key=lambda t: t[0], reverse=True), sorted(fits_aic, key=lambda t: t[0]))
+
+
+if __name__ == '__main__':
+    fit_dists = [
+        mle_normal,
+        mle_exponential,
+        mle_uniform
+    ]
+
+    # Read from stdin if no files specified
+    if len(sys.argv) == 1:
+        lines = sys.stdin.readlines()
+        print(SCREED)
+        print()
+        distfit([float(line.strip()) for line in lines], fit_dists)
+        print()
+
+    else:
+        print(SCREED)
+        for path in sys.argv[1:]:
+            print()
+            print(path)
+            print()
+            with open(path, 'r') as f:
+                distfit([float(line.strip()) for line in f], fit_dists)
+            print()
